@@ -1,1 +1,66 @@
 
+name: Generer video HD
+
+on:
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Recuperer le projet
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Installer les dependances JavaScript
+        run: |
+          npm init -y
+          npm install playwright
+
+      - name: Installer les outils video
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ffmpeg \
+            xvfb \
+            pulseaudio \
+            pulseaudio-utils \
+            python3
+
+      - name: Installer Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Generer la video MP4
+        run: |
+          set -e
+
+          export DISPLAY=:99
+
+          Xvfb :99 -screen 0 1080x1920x24 -ac &
+          sleep 3
+
+          pulseaudio --start --exit-idle-time=-1
+          sleep 2
+
+          pactl load-module module-null-sink sink_name=virtual_speaker
+          export PULSE_SINK=virtual_speaker
+
+          python3 -m http.server 8000 \
+            --bind 127.0.0.1 &
+          sleep 3
+
+          node render-video.cjs
+
+      - name: Recuperer la video HD
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-droits-enfant-HD
+          path: output/journee-droits-enfant.mp4
+          if-no-files-found: error
+          retention-days: 7
