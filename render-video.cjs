@@ -3,15 +3,17 @@ const { chromium } = require('playwright');
 const { spawn } = require('child_process');
 const fs = require('fs');
 
-const DURATION = 60;
 const WIDTH = 1080;
 const HEIGHT = 1920;
+const FPS = 30;
+const DURATION = 60;
+const TOTAL_FRAMES = FPS * DURATION;
 
 async function main() {
   fs.mkdirSync('output', { recursive: true });
 
   const browser = await chromium.launch({
-    headless: false,
+    headless: true,
     args: [
       '--no-sandbox',
       '--autoplay-policy=no-user-gesture-required',
@@ -21,11 +23,14 @@ async function main() {
 
   try {
     const page = await browser.newPage({
-      viewport: { width: WIDTH, height: HEIGHT },
+      viewport: {
+        width: WIDTH,
+        height: HEIGHT
+      },
       deviceScaleFactor: 1
     });
 
-    console.log('Ouverture de l’animation...');
+    console.log('Chargement du projet...');
 
     await page.goto('http://127.0.0.1:8000/?record=1', {
       waitUntil: 'networkidle',
@@ -34,6 +39,7 @@ async function main() {
 
     await page.evaluate(async () => {
       await document.fonts.ready;
+
       await Promise.all(
         Array.from(document.images).map(img =>
           img.decode().catch(() => {})
@@ -41,65 +47,125 @@ async function main() {
       );
     });
 
-    await page.addStyleTag({
-      content: '#rec-ui { display: none !important; }'
+    await page.waitForFunction(() =>
+      typeof render === 'function' &&
+      typeof t !== 'undefined'
+    );
+
+    const stage = page.locator('#stage');
+
+    const dimensions = await stage.evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return {
+        width: r.width,
+        height: r.height
+      };
     });
 
-    await page.waitForTimeout(1000);
+    if (
+      Math.round(dimensions.width) !== WIDTH ||
+      Math.round(dimensions.height) !== HEIGHT
+    ) {
+      throw new Error(
+        'Dimensions incorrectes du stage : ' +
+        JSON.stringify(dimensions)
+      );
+    }
 
-    // Remise à zéro de l'animation
-    await page.evaluate(() => {
+    // Déclencher la musique avec une interaction réelle.
+    await page.mouse.click(540, 960);
+    await page.waitForTimeout(300);
+
+    // Remise à zéro de la séquence.
+    await page.evaluate(async () => {
+      playing = true;
       t = 0;
       cur = -1;
-      stepP = -1;
-      stepO = -1;
       last = performance.now();
       isLoopReset = true;
+
+      if (bgAudio) {
+        bgAudio.currentTime = 0;
+        bgAudio.volume = 0;
+        await bgAudio.play();
+        audioReady = true;
+      }
+
+      render();
     });
 
-    console.log('Préparation de la capture vidéo...');
+    await page.waitForTimeout(100);
 
-    const display = process.env.DISPLAY || ':99';
+    console.log('Démarrage du rendu Full HD...');
 
     const ffmpeg = spawn('ffmpeg', [
       '-y',
-      '-f', 'x11grab',
-      '-framerate', '30',
-      '-video_size', `${WIDTH}x${HEIGHT}`,
-      '-i', `${display}+0,0`,
+
+      '-f', 'image2pipe',
+      '-framerate', String(FPS),
+      '-vcodec', 'png',
+      '-i', 'pipe:0',
+
+      '-thread_queue_size', '512',
       '-f', 'pulse',
       '-i', 'virtual_speaker.monitor',
-      '-t', String(DURATION),
+
       '-map', '0:v:0',
       '-map', '1:a:0',
+
       '-c:v', 'libx264',
-      '-preset', 'veryfast',
+      '-preset', 'medium',
       '-crf', '18',
       '-pix_fmt', 'yuv420p',
-      '-r', '30',
+      '-r', String(FPS),
+
       '-c:a', 'aac',
       '-b:a', '192k',
+
+      '-shortest',
       '-movflags', '+faststart',
+
       'output/journee-droits-enfant.mp4'
-    ], { stdio: 'inherit' });
+    ], {
+      stdio: ['pipe', 'inherit', 'inherit']
+    });
 
-    // Déclenche l'initialisation audio par un clic réel
-    await page.waitForTimeout(500);
-    await page.mouse.click(540, 960);
+    ffmpeg.stdin.on('error', err => {
+      console.error('Erreur entrée FFmpeg:', err.message);
+    });
 
-    console.log('Enregistrement en cours : 60 secondes...');
+    for (let i = 0; i < TOTAL_FRAMES; i++) {
+      const frame = await stage.screenshot({
+        type: 'png',
+        animations: 'allow',
+        caret: 'hide'
+      });
+
+      if (!ffmpeg.stdin.write(frame)) {
+        await new Promise(resolve =>
+          ffmpeg.stdin.once('drain', resolve)
+        );
+      }
+
+      if (i % 300 === 0) {
+        console.log(
+          `Progression : ${Math.round(i / TOTAL_FRAMES * 100)}%`
+        );
+      }
+    }
+
+    ffmpeg.stdin.end();
 
     const exitCode = await new Promise((resolve, reject) => {
-      ffmpeg.on('error', reject);
-      ffmpeg.on('close', resolve);
+      ffmpeg.once('error', reject);
+      ffmpeg.once('close', resolve);
     });
 
     if (exitCode !== 0) {
-      throw new Error(`FFmpeg a échoué : code ${exitCode}`);
+      throw new Error(`FFmpeg erreur : ${exitCode}`);
     }
 
-    console.log('Vidéo générée avec succès !');
-    console.log('Fichier : output/journee-droits-enfant.mp4');
+    console.log('Vidéo Full HD créée !');
 
   } finally {
     await browser.close();
@@ -110,4 +176,3 @@ main().catch(error => {
   console.error(error);
   process.exit(1);
 });
-
