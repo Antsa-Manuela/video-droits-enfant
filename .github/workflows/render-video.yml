@@ -4,6 +4,9 @@ name: Generer video HD
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   render:
     runs-on: ubuntu-latest
@@ -18,50 +21,30 @@ jobs:
         with:
           node-version: 22
 
-      - name: Installer les dependances
+      - name: Installer FFmpeg et PulseAudio
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg pulseaudio pulseaudio-utils
+
+      - name: Installer Playwright
         run: |
           npm init -y
           npm install playwright
+          npx playwright install --with-deps chromium
 
-      - name: Installer Chromium et FFmpeg
+      - name: Configurer le son
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ffmpeg \
-            pulseaudio \
-            pulseaudio-utils
-
-      - name: Installer Chromium
-        run: npx playwright install --with-deps chromium
-
-      - name: Generer la video
-        run: |
-          set -e
-
           pulseaudio --start --exit-idle-time=-1
-          sleep 2
-
           pactl load-module module-null-sink sink_name=virtual_speaker
+          pactl set-default-sink virtual_speaker
+          pactl list short sinks
+          pactl list short sources
 
-          python3 -m http.server 8000 \
-            --bind 127.0.0.1 &
-          SERVER_PID=$!
+      - name: Generer la video Full HD
+        run: node render-video.cjs
 
-          sleep 3
-
-          PULSE_SINK=virtual_speaker node render-video.cjs
-
-          kill $SERVER_PID || true
-
-      - name: Verifier la video
-        run: |
-          ffprobe -v error \
-            -show_entries stream=codec_name,width,height,r_frame_rate \
-            -show_entries format=duration \
-            -of default=noprint_wrappers=1 \
-            output/journee-droits-enfant.mp4
-
-      - name: Telecharger la video
+      - name: Recuperer la video
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: video-droits-enfant-HD
